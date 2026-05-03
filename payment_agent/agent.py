@@ -321,10 +321,8 @@ class Agent:
             card.to_api_dict(),
         )
 
-        # Clear card data immediately after API call (security)
-        self._ctx.card_details = CardDetails()
-
         if success and txn_id:
+            self._ctx.card_details = CardDetails()  # clear card data on success
             self._ctx.transaction_id = txn_id
             self._ctx.state = ConversationState.PAYMENT_COMPLETE
             remaining_balance = (
@@ -347,15 +345,26 @@ class Agent:
 
         terminal_errors = {"insufficient_balance"}
         if error_code in terminal_errors:
+            self._ctx.card_details = CardDetails()
             self._ctx.state = ConversationState.CLOSED
             return f"Payment failed: {error_msg} Session closed."
 
         if self._ctx.payment_attempts >= MAX_PAYMENT_ATTEMPTS:
+            self._ctx.card_details = CardDetails()
             self._ctx.state = ConversationState.CLOSED
             return (
                 f"Payment failed: {error_msg} "
                 "Maximum payment attempts exceeded. Please contact customer support."
             )
+
+        # Clear only the problematic field so user can fix just that
+        if error_code == "invalid_card":
+            self._ctx.card_details.card_number = None
+        elif error_code == "invalid_cvv":
+            self._ctx.card_details.cvv = None
+        elif error_code == "invalid_expiry":
+            self._ctx.card_details.expiry_month = None
+            self._ctx.card_details.expiry_year = None
 
         remaining_attempts = MAX_PAYMENT_ATTEMPTS - self._ctx.payment_attempts
         return (
