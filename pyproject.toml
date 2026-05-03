@@ -27,6 +27,9 @@ select = ["E", "F", "I", "W"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests requiring ANTHROPIC_API_KEY and real API calls",
+]
 
 [tool.mypy]
 python_version = "3.11"
