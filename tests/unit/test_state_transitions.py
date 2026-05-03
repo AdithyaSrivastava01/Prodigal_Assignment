@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from payment_agent.models import ConversationState, LLMResponse, ToolCall
+from payment_agent.models import ConversationState, LLMResponse
 from tests.conftest import (
     MockPaymentAPIClient,
     build_agent,
@@ -215,7 +215,7 @@ class TestHappyPathDOB:
             or "transaction" in r5["message"].lower()
         )
 
-        r6 = agent.next("thanks")
+        agent.next("thanks")
         assert agent._working.state == ConversationState.CLOSED
 
 

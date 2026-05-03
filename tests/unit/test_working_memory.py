@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from payment_agent.memory.working import EntityBuffer, WorkingMemory
 from payment_agent.models import ConversationState
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from payment_agent.validators import (
     luhn_check,
     validate_amount,

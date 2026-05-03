@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from payment_agent.models import AccountData
 
-
 FALLBACK_RESPONSE = (
     "I apologize, but I need to rephrase my response. "
     "Could you please repeat your last message?"

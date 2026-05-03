@@ -30,7 +30,7 @@ class TestSemanticMemory:
         mem.record("payment", "Balance disclosed", turn=3)
         mem.record("identity", "Account found", turn=1)
         block = mem.build_context_block()
-        lines = [l for l in block.strip().split("\n") if l.startswith("[")]
+        lines = [line for line in block.strip().split("\n") if line.startswith("[")]
         assert "identity" in lines[0]
         assert "payment" in lines[1]
 

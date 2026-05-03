@@ -7,7 +7,8 @@ EXTRACT_ENTITIES_TOOL: dict = {
     "description": (
         "Extract structured entities from the user's message. "
         "Return null for any entity not clearly present in the message. "
-        "For names, extract the EXACT text the user provided — do not normalize or correct spelling. "
+        "For names, extract the EXACT text the user provided — "
+        "do not normalize or correct spelling. "
         "For dates, extract in YYYY-MM-DD format if possible. "
         "For aadhaar_last4, extract exactly 4 digits. "
         "For pincode, extract exactly 6 digits."

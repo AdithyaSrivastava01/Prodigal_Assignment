@@ -8,9 +8,9 @@ import sys
 
 import anthropic
 
-from payment_agent.agent import Agent
 from eval.metrics import EvalReport, ScenarioResult, StepResult
 from eval.scenarios import SCENARIOS, Scenario
+from payment_agent.agent import Agent
 
 
 def judge_response(
