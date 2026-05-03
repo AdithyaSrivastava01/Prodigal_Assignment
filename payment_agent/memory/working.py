@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from payment_agent.models import AccountData, CardDetails, ConversationState
 
 _ACCOUNT_ID_RE = re.compile(r"^ACC\d+$")
+_AADHAAR_LAST4_RE = re.compile(r"^\d{4}$")
+_PINCODE_RE = re.compile(r"^\d{6}$")
 
 
 class EntityBuffer(BaseModel):
@@ -40,9 +42,16 @@ class EntityBuffer(BaseModel):
             name = str(extracted["full_name"]).strip()
             if len(name) >= 2:
                 self.name = name
-        for key in ("dob", "aadhaar_last4", "pincode"):
-            if extracted.get(key):
-                self.secondary_factors[key] = extracted[key]
+        if extracted.get("dob"):
+            self.secondary_factors["dob"] = str(extracted["dob"])
+        if extracted.get("aadhaar_last4"):
+            val = str(extracted["aadhaar_last4"])
+            if _AADHAAR_LAST4_RE.match(val):
+                self.secondary_factors["aadhaar_last4"] = val
+        if extracted.get("pincode"):
+            val = str(extracted["pincode"])
+            if _PINCODE_RE.match(val):
+                self.secondary_factors["pincode"] = val
         if extracted.get("payment_amount") is not None:
             self.payment_amount = extracted["payment_amount"]
         if extracted.get("payment_intent"):

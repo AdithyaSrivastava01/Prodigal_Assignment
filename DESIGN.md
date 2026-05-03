@@ -60,15 +60,39 @@ Inspired by mem0's extract-consolidate-retrieve pipeline and LangGraph's reducer
 
 **EntityBuffer** (part of WorkingMemory) handles slot-filling for out-of-order input. When a user says "Hi, I'm Nithin Jain, my account is ACC1001", both the name and account_id are buffered. The state machine drains entities in flow order — account_id first, then name — so no information is lost.
 
-## PII Safety (Defense-in-Depth)
+## Security Guardrails
 
-Three layers of protection:
+### PII Safety (Defense-in-Depth)
+
+Four layers of protection:
 
 1. **Architecture-level isolation:** DOB, Aadhaar last 4, and pincode are NEVER sent to Claude. The state machine performs verification locally using `VerificationService`. Claude only sees sanitized status messages ("Entities extracted.").
 
 2. **System prompt rules:** Every state-specific prompt includes hard rules: "NEVER reveal the user's date of birth, Aadhaar number, or pincode."
 
-3. **Post-response PIIScanner:** Before any response reaches the user, `PIIScanner` checks for leaked sensitive values. If found, the entire response is replaced with a safe fallback.
+3. **Post-response PIIScanner:** Before any response reaches the user, `PIIScanner` checks for leaked sensitive values using word-boundary regex matching with date format variants (YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY). If found, the entire response is replaced with a safe fallback.
+
+4. **Model repr redaction:** `AccountData.__repr__()` and `CardDetails.__repr__()` mask sensitive fields, preventing accidental PII exposure in logs, tracebacks, or debug output.
+
+### Card Data Protection
+
+- **Conversation memory redaction:** Card numbers and CVVs are masked (`_redact_card_data()`) before being stored in conversation memory, so they never reach Claude's context on subsequent turns.
+- **Tool call sanitization:** When Claude extracts card details via `extract_card_details`, the tool input is sanitized (card number masked to `****XXXX`, CVV replaced with `***`) before storage.
+- **Immediate cleanup:** Card details are cleared from working memory on payment completion, failure, or session close via `_close_session()`.
+- **HTTPS enforcement:** `PaymentAPIClient` rejects non-HTTPS base URLs, preventing plaintext transmission of card data.
+
+### Input Validation Guardrails
+
+- **Entity format validation:** `EntityBuffer.fill()` validates all extracted entities before accepting them — account IDs must match `ACC\d+`, names must be >= 2 characters, Aadhaar must be exactly 4 digits, pincode exactly 6 digits. This prevents hallucinated extractions from `tool_choice: "any"` from triggering spurious state transitions.
+- **Input length limit:** User input is truncated to 500 characters, preventing context stuffing attacks.
+- **Session turn limit:** Sessions expire after 30 turns with full sensitive data cleanup.
+- **Luhn check + CVV/expiry validation:** Card numbers are validated via Luhn algorithm, CVV length is enforced (3 for standard, 4 for Amex), and expired cards are rejected.
+
+### Session Security
+
+- **Sensitive data cleanup on close:** `_close_session()` clears `account_data`, `card_details`, and `collected_name` from working memory when the session transitions to `CLOSED` — whether from successful payment, lockout, decline, or turn limit.
+- **Shared verification counter:** A single counter tracks failures across name AND secondary factor verification (max 3 total). Prevents brute-force enumeration.
+- **Forced tool use:** `tool_choice: "any"` ensures Claude always calls the extraction tool when tools are available, preventing the LLM from bypassing entity extraction and generating uncontrolled freeform responses.
 
 ## LLM Integration
 
@@ -120,9 +144,8 @@ Card fields are merged across messages. Users can provide all details at once or
 ## Tradeoffs Accepted
 
 1. **Synchronous API calls** — acceptable for CLI, not for concurrent web server use.
-2. **No card number masking in memory** — card data cleared after payment, but exists in plaintext during collection.
-3. **Two LLM calls per turn** — tool_use response + follow-up text response. Could be optimized to single call.
-4. **No conversation summarization** — overflow window exists but summary generation isn't triggered automatically (would require an additional LLM call).
+2. **Two LLM calls per turn** — tool_use response + follow-up text response. Could be optimized to single call with prompt engineering.
+3. **No conversation summarization** — overflow window exists but summary generation isn't triggered automatically (would require an additional LLM call).
 
 ## What I Would Improve With More Time
 
@@ -130,7 +153,6 @@ Card fields are merged across messages. Users can provide all details at once or
 2. **Streaming responses** — use Claude's streaming API for better UX.
 3. **Automatic conversation summarization** — trigger when overflow exceeds threshold.
 4. **Rate limiting** — cooldown between verification attempts.
-5. **Session timeout** — expire inactive sessions.
-6. **Card tokenization** — never store raw card numbers, even temporarily.
-7. **Observability** — structured logging, OpenTelemetry traces.
-8. **Multi-language support** — i18n for user-facing messages.
+5. **Card tokenization** — never store raw card numbers, even temporarily; use a tokenization service.
+6. **Observability** — structured logging, OpenTelemetry traces.
+7. **Multi-language support** — i18n for user-facing messages.

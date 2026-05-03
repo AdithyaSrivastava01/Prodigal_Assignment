@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from payment_agent.api_client import PaymentAPIClient, PaymentAPIClientBase
@@ -23,6 +24,19 @@ from payment_agent.validators import (
 from payment_agent.verification import VerificationService
 
 logger = logging.getLogger(__name__)
+
+MAX_INPUT_LENGTH = 500
+MAX_TURNS = 30
+
+_CARD_NUMBER_RE = re.compile(r"\b(\d{4})\d{8,11}(\d{4})\b")
+_CVV_RE = re.compile(r"(?i)(cvv[:\s]*)(\d{3,4})")
+
+
+def _redact_card_data(text: str) -> str:
+    """Mask card numbers and CVVs before storing in conversation memory."""
+    text = _CARD_NUMBER_RE.sub(r"\1********\2", text)
+    text = _CVV_RE.sub(r"\1***", text)
+    return text
 
 
 def _fmt(amount: float) -> str:
@@ -97,7 +111,18 @@ class Agent:
     def next(self, user_input: str) -> dict:
         """Process one conversation turn."""
         self._working.turn_count += 1
-        self._conv_memory.add_user_message(user_input)
+
+        # Guardrail: session turn limit
+        if self._working.turn_count > MAX_TURNS:
+            self._close_session()
+            return {"message": "Session expired. Please start a new conversation."}
+
+        # Guardrail: truncate oversized input
+        if len(user_input) > MAX_INPUT_LENGTH:
+            user_input = user_input[:MAX_INPUT_LENGTH]
+
+        # Guardrail: redact card data before storing in conversation memory
+        self._conv_memory.add_user_message(_redact_card_data(user_input))
 
         # Get LLM response with extraction
         llm_response = self._call_llm()
@@ -130,7 +155,17 @@ class Agent:
             # Handle tool_use stop_reason — Claude wants to call a tool
             if response.stop_reason == "tool_use" and response.tool_calls:
                 tc = response.tool_calls[0]
-                self._conv_memory.add_assistant_tool_use(tc.id, tc.name, tc.input)
+                # Guardrail: redact card data from tool input before storing
+                sanitized_input = dict(tc.input)
+                if tc.name == "extract_card_details":
+                    cn = sanitized_input.get("card_number")
+                    if cn and len(str(cn)) >= 4:
+                        sanitized_input["card_number"] = f"****{str(cn)[-4:]}"
+                    if "cvv" in sanitized_input:
+                        sanitized_input["cvv"] = "***"
+                self._conv_memory.add_assistant_tool_use(
+                    tc.id, tc.name, sanitized_input
+                )
                 self._conv_memory.add_tool_result(tc.id, "Entities extracted.")
 
                 # Make a follow-up call for the text response
@@ -174,8 +209,7 @@ class Agent:
             ConversationState.AWAITING_AMOUNT,
             ConversationState.COLLECTING_CARD,
         ):
-            self._working.state = ConversationState.CLOSED
-            self._working.card_details = CardDetails()
+            self._close_session()
             return "No problem. Thank you for your time. Goodbye!"
 
         if state == ConversationState.GREETING:
@@ -193,7 +227,7 @@ class Agent:
         elif state == ConversationState.COLLECTING_CARD:
             return self._handle_card(llm_response)
         elif state == ConversationState.PAYMENT_COMPLETE:
-            self._working.state = ConversationState.CLOSED
+            self._close_session()
             return llm_response.text or "Thank you. Have a great day! Goodbye."
         elif state == ConversationState.CLOSED:
             return (
@@ -201,6 +235,13 @@ class Agent:
                 "Please start a new conversation if you need further assistance."
             )
         return llm_response.text or FALLBACK_RESPONSES[ConversationState.CLOSED]
+
+    def _close_session(self) -> None:
+        """Clear sensitive data and transition to CLOSED."""
+        self._working.state = ConversationState.CLOSED
+        self._working.account_data = None
+        self._working.card_details = CardDetails()
+        self._working.collected_name = None
 
     # ---- State handlers ---- #
 
@@ -305,7 +346,7 @@ class Agent:
         self._working.verification_attempts += 1
         remaining = MAX_VERIFICATION_ATTEMPTS - self._working.verification_attempts
         if remaining <= 0:
-            self._working.state = ConversationState.CLOSED
+            self._close_session()
             self._semantic.record(
                 "verification",
                 "Session locked — max attempts exceeded",
@@ -401,7 +442,7 @@ class Agent:
         self._working.verification_attempts += 1
         remaining = MAX_VERIFICATION_ATTEMPTS - self._working.verification_attempts
         if remaining <= 0:
-            self._working.state = ConversationState.CLOSED
+            self._close_session()
             self._semantic.record(
                 "verification",
                 "Session locked — max attempts exceeded",
@@ -566,13 +607,11 @@ class Agent:
         )
 
         if error_code in TERMINAL_PAYMENT_ERRORS:
-            self._working.card_details = CardDetails()
-            self._working.state = ConversationState.CLOSED
+            self._close_session()
             return f"Payment failed: {error_msg} Session closed."
 
         if self._working.payment_attempts >= MAX_PAYMENT_ATTEMPTS:
-            self._working.card_details = CardDetails()
-            self._working.state = ConversationState.CLOSED
+            self._close_session()
             return (
                 f"Payment failed: {error_msg} "
                 "Maximum payment attempts exceeded. Please contact customer support."

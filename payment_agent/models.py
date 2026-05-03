@@ -30,6 +30,17 @@ class AccountData(BaseModel):
     pincode: str
     balance: float
 
+    def __repr__(self) -> str:
+        return (
+            f"AccountData(account_id={self.account_id!r}, "
+            f"full_name={self.full_name!r}, dob='****', "
+            f"aadhaar_last4='****', pincode='****', "
+            f"balance={self.balance})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
 
 class CardDetails(BaseModel):
     """Card payment details collected from the user."""
@@ -39,6 +50,17 @@ class CardDetails(BaseModel):
     cvv: str | None = None
     expiry_month: int | None = None
     expiry_year: int | None = None
+
+    def __repr__(self) -> str:
+        masked_num = f"****{self.card_number[-4:]}" if self.card_number else None
+        return (
+            f"CardDetails(cardholder_name={self.cardholder_name!r}, "
+            f"card_number={masked_num!r}, cvv='***', "
+            f"expiry_month={self.expiry_month}, expiry_year={self.expiry_year})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
     def is_complete(self) -> bool:
         return all(
