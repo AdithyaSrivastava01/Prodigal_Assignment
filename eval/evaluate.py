@@ -1,10 +1,16 @@
-"""LLM-as-judge evaluation runner for the payment collection agent."""
+"""LLM-as-judge evaluation runner for the payment collection agent.
+
+Scenarios run in parallel (one thread per scenario) to reduce wall-clock time.
+Each scenario's steps are still sequential — they share agent state.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import anthropic
 
@@ -59,12 +65,19 @@ def check_pii_safety(response: str, reject_patterns: list[str]) -> bool:
 def run_scenario(
     scenario: Scenario,
     judge_client: anthropic.Anthropic | None = None,
+    verbose: bool = False,
 ) -> ScenarioResult:
     """Run a single evaluation scenario."""
     agent = Agent()
     result = ScenarioResult(name=scenario.name)
 
-    for step in scenario.steps:
+    for i, step in enumerate(scenario.steps):
+        if verbose:
+            print(
+                f"  [{scenario.name}] step {i + 1}/{len(scenario.steps)}: "
+                f'"{step.user_input[:40]}"'
+            )
+
         response = agent.next(step.user_input)
         message = response["message"]
 
@@ -91,11 +104,15 @@ def run_scenario(
             )
         )
 
+    if verbose:
+        status = "PASS" if result.passed else "FAIL"
+        print(f"  [{status}] {scenario.name} done (avg: {result.avg_score:.2f})")
+
     return result
 
 
-def run_all(use_judge: bool = True) -> EvalReport:
-    """Run all evaluation scenarios."""
+def run_all(use_judge: bool = True, verbose: bool = False) -> EvalReport:
+    """Run all evaluation scenarios in parallel."""
     judge_client = None
     if use_judge:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -103,15 +120,28 @@ def run_all(use_judge: bool = True) -> EvalReport:
             judge_client = anthropic.Anthropic(api_key=api_key)
 
     report = EvalReport()
-    for scenario in SCENARIOS:
-        result = run_scenario(scenario, judge_client)
-        report.scenario_results.append(result)
+
+    if verbose:
+        print(f"Running {len(SCENARIOS)} scenarios in parallel...\n")
+
+    with ThreadPoolExecutor(max_workers=len(SCENARIOS)) as pool:
+        futures = {
+            pool.submit(run_scenario, s, judge_client, verbose): s.name
+            for s in SCENARIOS
+        }
+        for future in as_completed(futures):
+            report.scenario_results.append(future.result())
+
+    # Sort results to match original scenario order for deterministic output
+    name_order = {s.name: i for i, s in enumerate(SCENARIOS)}
+    report.scenario_results.sort(key=lambda r: name_order.get(r.name, 0))
+
     return report
 
 
 def print_report(report: EvalReport) -> None:
     """Print evaluation results."""
-    print("=" * 60)
+    print("\n" + "=" * 60)
     print("  EVALUATION REPORT")
     print("=" * 60)
 
@@ -146,8 +176,11 @@ def main() -> None:
         print("ERROR: ANTHROPIC_API_KEY not set. Cannot run evaluation.")
         sys.exit(1)
 
-    report = run_all(use_judge=True)
+    start = time.time()
+    report = run_all(use_judge=True, verbose=True)
+    elapsed = time.time() - start
     print_report(report)
+    print(f"\nCompleted in {elapsed:.1f}s")
     sys.exit(0 if report.success_rate >= 0.8 else 1)
 
 
