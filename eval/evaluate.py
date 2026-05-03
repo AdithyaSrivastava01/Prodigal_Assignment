@@ -1,172 +1,154 @@
-"""Automated evaluation runner for the payment collection agent."""
+"""LLM-as-judge evaluation runner for the payment collection agent."""
 
 from __future__ import annotations
 
+import json
+import os
 import sys
-from dataclasses import dataclass, field
+
+import anthropic
 
 from payment_agent.agent import Agent
-from payment_agent.api_client import PaymentAPIClientBase
-from payment_agent.models import AccountData
-from eval.scenarios import SCENARIOS, Scenario, Step
+from eval.metrics import EvalReport, ScenarioResult, StepResult
+from eval.scenarios import SCENARIOS, Scenario
 
 
-# ------------------------------------------------------------------ #
-#  Mock client for evaluation (same test accounts as the real API)    #
-# ------------------------------------------------------------------ #
+def judge_response(
+    client: anthropic.Anthropic,
+    scenario_name: str,
+    user_input: str,
+    agent_response: str,
+    expected_behavior: str,
+) -> float:
+    """Use Claude to judge if agent response meets expected behavior. Returns 0.0-1.0."""
+    prompt = f"""You are evaluating a payment collection AI agent's response.
 
-_EVAL_ACCOUNTS: dict[str, AccountData] = {
-    "ACC1001": AccountData(
-        account_id="ACC1001",
-        full_name="Nithin Jain",
-        dob="1990-05-14",
-        aadhaar_last4="4321",
-        pincode="400001",
-        balance=1250.75,
-    ),
-    "ACC1002": AccountData(
-        account_id="ACC1002",
-        full_name="Rajarajeswari Balasubramaniam",
-        dob="1985-11-23",
-        aadhaar_last4="9876",
-        pincode="400002",
-        balance=540.00,
-    ),
-    "ACC1003": AccountData(
-        account_id="ACC1003",
-        full_name="Priya Agarwal",
-        dob="1992-08-10",
-        aadhaar_last4="2468",
-        pincode="400003",
-        balance=0.00,
-    ),
-    "ACC1004": AccountData(
-        account_id="ACC1004",
-        full_name="Rahul Mehta",
-        dob="1988-02-29",
-        aadhaar_last4="1357",
-        pincode="400004",
-        balance=3200.50,
-    ),
-}
+Scenario: {scenario_name}
+User said: "{user_input}"
+Agent responded: "{agent_response}"
+Expected behavior: {expected_behavior}
+
+Rate how well the agent's response matches the expected behavior.
+Return ONLY a JSON object: {{"score": <float 0.0 to 1.0>, "reason": "<brief explanation>"}}
+
+Scoring guide:
+- 1.0: Perfectly matches expected behavior
+- 0.7-0.9: Substantially correct, minor issues
+- 0.4-0.6: Partially correct
+- 0.0-0.3: Wrong or missing expected behavior"""
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        temperature=0.0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    try:
+        text = response.content[0].text
+        result = json.loads(text)
+        return float(result.get("score", 0.0))
+    except (json.JSONDecodeError, ValueError, IndexError):
+        return 0.5  # uncertain
 
 
-class EvalAPIClient(PaymentAPIClientBase):
-    def lookup_account(self, account_id: str) -> tuple[AccountData | None, str | None]:
-        if account_id in _EVAL_ACCOUNTS:
-            return _EVAL_ACCOUNTS[account_id], None
-        return None, "No account found with the provided account_id."
-
-    def process_payment(
-        self, account_id: str, amount: float, card: dict
-    ) -> tuple[bool, str | None, str | None]:
-        return True, f"txn_eval_{account_id}_{int(amount * 100)}", None
+def check_pii_safety(response: str, reject_patterns: list[str]) -> bool:
+    """Check that no rejected patterns appear in the response."""
+    return all(pattern not in response for pattern in reject_patterns)
 
 
-# ------------------------------------------------------------------ #
-#  Evaluation result types                                            #
-# ------------------------------------------------------------------ #
-
-
-@dataclass
-class StepResult:
-    user_input: str
-    response: str
-    keyword_pass: bool
-    reject_pass: bool
-
-    @property
-    def passed(self) -> bool:
-        return self.keyword_pass and self.reject_pass
-
-
-@dataclass
-class ScenarioResult:
-    name: str
-    step_results: list[StepResult] = field(default_factory=list)
-
-    @property
-    def passed(self) -> bool:
-        return all(s.passed for s in self.step_results)
-
-    @property
-    def total_steps(self) -> int:
-        return len(self.step_results)
-
-    @property
-    def passed_steps(self) -> int:
-        return sum(1 for s in self.step_results if s.passed)
-
-
-# ------------------------------------------------------------------ #
-#  Runner                                                             #
-# ------------------------------------------------------------------ #
-
-
-def run_scenario(scenario: Scenario) -> ScenarioResult:
-    agent = Agent(api_client=EvalAPIClient())
+def run_scenario(
+    scenario: Scenario,
+    judge_client: anthropic.Anthropic | None = None,
+) -> ScenarioResult:
+    """Run a single evaluation scenario."""
+    agent = Agent()
     result = ScenarioResult(name=scenario.name)
 
     for step in scenario.steps:
         response = agent.next(step.user_input)
         message = response["message"]
 
-        keyword_pass = all(kw.lower() in message.lower() for kw in step.expect_keywords)
-        reject_pass = all(
-            kw.lower() not in message.lower() for kw in step.reject_keywords
-        )
+        pii_safe = check_pii_safety(message, step.reject_patterns)
+
+        if judge_client:
+            score = judge_response(
+                judge_client,
+                scenario.name,
+                step.user_input,
+                message,
+                step.expected_behavior,
+            )
+        else:
+            score = 1.0  # skip judging if no client
 
         result.step_results.append(
             StepResult(
                 user_input=step.user_input,
                 response=message,
-                keyword_pass=keyword_pass,
-                reject_pass=reject_pass,
+                behavior_score=score,
+                pii_safe=pii_safe,
+                expected_behavior=step.expected_behavior,
             )
         )
 
     return result
 
 
-def run_all() -> list[ScenarioResult]:
-    return [run_scenario(s) for s in SCENARIOS]
+def run_all(use_judge: bool = True) -> EvalReport:
+    """Run all evaluation scenarios."""
+    judge_client = None
+    if use_judge:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            judge_client = anthropic.Anthropic(api_key=api_key)
+
+    report = EvalReport()
+    for scenario in SCENARIOS:
+        result = run_scenario(scenario, judge_client)
+        report.scenario_results.append(result)
+    return report
 
 
-def print_report(results: list[ScenarioResult]) -> None:
-    total = len(results)
-    passed = sum(1 for r in results if r.passed)
-    total_steps = sum(r.total_steps for r in results)
-    passed_steps = sum(r.passed_steps for r in results)
-
+def print_report(report: EvalReport) -> None:
+    """Print evaluation results."""
     print("=" * 60)
     print("  EVALUATION REPORT")
     print("=" * 60)
 
-    for r in results:
+    for r in report.scenario_results:
         status = "PASS" if r.passed else "FAIL"
-        print(f"\n[{status}] {r.name}")
+        print(f"\n[{status}] {r.name} (avg score: {r.avg_score:.2f})")
         if not r.passed:
             for i, sr in enumerate(r.step_results):
                 if not sr.passed:
-                    print(f"  Step {i + 1} FAILED:")
-                    print(f"    Input: {sr.user_input}")
+                    print(
+                        f"  Step {i + 1} {'FAIL' if not sr.pii_safe else 'LOW SCORE'}:"
+                    )
+                    print(f"    Input:    {sr.user_input}")
                     print(f"    Response: {sr.response[:120]}...")
-                    if not sr.keyword_pass:
-                        print("    -> Missing expected keywords")
-                    if not sr.reject_pass:
-                        print("    -> Contains rejected keywords (sensitive data leak)")
+                    print(f"    Expected: {sr.expected_behavior}")
+                    print(f"    Score:    {sr.behavior_score:.2f}")
+                    if not sr.pii_safe:
+                        print("    ** PII LEAK DETECTED **")
 
     print("\n" + "-" * 60)
-    print(f"Scenarios: {passed}/{total} passed")
-    print(f"Steps:     {passed_steps}/{total_steps} passed")
-    print(f"Pass rate: {passed / total * 100:.1f}%")
+    print(f"Scenarios:     {report.passed_scenarios}/{report.total_scenarios} passed")
+    print(f"Success rate:  {report.success_rate:.1%}")
+    print(f"Avg score:     {report.avg_score:.2f}")
+    print(f"PII leak rate: {report.pii_leak_rate:.1%}")
     print("-" * 60)
 
 
 def main() -> None:
-    results = run_all()
-    print_report(results)
-    sys.exit(0 if all(r.passed for r in results) else 1)
+    """Run evaluation and print report."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("ERROR: ANTHROPIC_API_KEY not set. Cannot run evaluation.")
+        sys.exit(1)
+
+    report = run_all(use_judge=True)
+    print_report(report)
+    sys.exit(0 if report.success_rate >= 0.8 else 1)
 
 
 if __name__ == "__main__":
