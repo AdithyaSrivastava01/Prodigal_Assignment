@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -85,3 +86,21 @@ class ConversationContext(BaseModel):
     card_details: CardDetails = Field(default_factory=CardDetails)
     transaction_id: str | None = None
     payment_attempts: int = 0
+
+
+@dataclass
+class ToolCall:
+    """A tool call from Claude's response."""
+
+    id: str
+    name: str
+    input: dict
+
+
+@dataclass
+class LLMResponse:
+    """Parsed response from Claude API."""
+
+    text: str
+    tool_calls: list[ToolCall]
+    stop_reason: str
