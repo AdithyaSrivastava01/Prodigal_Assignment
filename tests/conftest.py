@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from payment_agent.agent import Agent
 from payment_agent.api_client import PaymentAPIClientBase
-from payment_agent.models import AccountData
+from payment_agent.llm.client import MockLLMClient
+from payment_agent.models import AccountData, LLMResponse, ToolCall
 
 TEST_ACCOUNTS: dict[str, AccountData] = {
     "ACC1001": AccountData(
@@ -43,7 +42,7 @@ TEST_ACCOUNTS: dict[str, AccountData] = {
 
 
 class MockPaymentAPIClient(PaymentAPIClientBase):
-    """Mock API client for testing. Uses in-memory test accounts."""
+    """Mock API client using in-memory test accounts."""
 
     def __init__(
         self,
@@ -75,16 +74,39 @@ class MockPaymentAPIClient(PaymentAPIClientBase):
         return True, "txn_mock_default", None
 
 
-@pytest.fixture
-def mock_api() -> MockPaymentAPIClient:
-    return MockPaymentAPIClient()
+def make_extraction_response(entities: dict) -> LLMResponse:
+    """Create a mock LLM response with extract_entities tool call."""
+    return LLMResponse(
+        text="",
+        tool_calls=[ToolCall(id="toolu_mock", name="extract_entities", input=entities)],
+        stop_reason="tool_use",
+    )
 
 
-@pytest.fixture
-def agent(mock_api: MockPaymentAPIClient) -> Agent:
-    return Agent(api_client=mock_api)
+def make_card_extraction_response(card: dict) -> LLMResponse:
+    """Create a mock LLM response with extract_card_details tool call."""
+    return LLMResponse(
+        text="",
+        tool_calls=[ToolCall(id="toolu_mock", name="extract_card_details", input=card)],
+        stop_reason="tool_use",
+    )
+
+
+def make_text_response(text: str) -> LLMResponse:
+    """Create a mock LLM response with just text."""
+    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn")
+
+
+def build_agent(
+    llm_responses: list[LLMResponse],
+    api_client: MockPaymentAPIClient | None = None,
+) -> Agent:
+    """Build an Agent with mock LLM and mock API."""
+    mock_llm = MockLLMClient(responses=llm_responses)
+    mock_api = api_client or MockPaymentAPIClient()
+    return Agent(api_client=mock_api, llm_client=mock_llm)
 
 
 def drive_conversation(agent: Agent, messages: list[str]) -> list[str]:
-    """Helper: send a sequence of messages and collect agent responses."""
+    """Send a sequence of messages and collect agent responses."""
     return [agent.next(msg)["message"] for msg in messages]
