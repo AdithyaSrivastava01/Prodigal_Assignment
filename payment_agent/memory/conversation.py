@@ -22,6 +22,13 @@ class ConversationMemory:
         self._messages.append({"role": "user", "content": content})
         self._check_overflow()
 
+    def redact_last_user_message(self, redacted: str) -> None:
+        """Replace the content of the most recent user message (post-extraction redaction)."""
+        for msg in reversed(self._messages):
+            if msg["role"] == "user" and isinstance(msg["content"], str):
+                msg["content"] = redacted
+                break
+
     def add_assistant_message(self, content: str) -> None:
         self._messages.append({"role": "assistant", "content": content})
         self._check_overflow()

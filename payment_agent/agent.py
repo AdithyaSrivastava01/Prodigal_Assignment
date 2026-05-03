@@ -121,11 +121,15 @@ class Agent:
         if len(user_input) > MAX_INPUT_LENGTH:
             user_input = user_input[:MAX_INPUT_LENGTH]
 
-        # Guardrail: redact card data before storing in conversation memory
-        self._conv_memory.add_user_message(_redact_card_data(user_input))
+        # Store raw input for LLM extraction (Claude needs unredacted card data)
+        self._conv_memory.add_user_message(user_input)
 
         # Get LLM response with extraction
         llm_response = self._call_llm()
+
+        # Guardrail: redact card data from the user message we just added,
+        # so subsequent LLM calls don't see raw PAN/CVV in history
+        self._conv_memory.redact_last_user_message(_redact_card_data(user_input))
 
         # Process tool calls to extract entities
         extracted = self._process_tool_calls(llm_response)
