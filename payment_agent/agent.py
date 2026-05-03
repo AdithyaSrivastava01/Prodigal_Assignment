@@ -242,6 +242,7 @@ class Agent:
         account_data, error = self._api.lookup_account(account_id)
         if error:
             self._working.state = ConversationState.AWAITING_ACCOUNT_ID
+            self._working.collected_name = None
             self._semantic.record(
                 "error",
                 f"Account lookup failed: {error}",

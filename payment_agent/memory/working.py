@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from payment_agent.models import AccountData, CardDetails, ConversationState
+
+_ACCOUNT_ID_RE = re.compile(r"^ACC\d+$")
 
 
 class EntityBuffer(BaseModel):
@@ -25,11 +28,18 @@ class EntityBuffer(BaseModel):
     is_affirmative: bool = False
 
     def fill(self, extracted: dict[str, Any]) -> None:
-        """Merge extracted entities into buffer. None values are ignored."""
-        if extracted.get("account_id"):
-            self.account_id = extracted["account_id"]
+        """Merge extracted entities into buffer. None values are ignored.
+
+        Applies format validation as a guardrail — rejects garbage values
+        that the LLM may hallucinate when forced to call the extraction tool.
+        """
+        aid = extracted.get("account_id")
+        if aid and _ACCOUNT_ID_RE.match(str(aid)):
+            self.account_id = str(aid)
         if extracted.get("full_name"):
-            self.name = extracted["full_name"]
+            name = str(extracted["full_name"]).strip()
+            if len(name) >= 2:
+                self.name = name
         for key in ("dob", "aadhaar_last4", "pincode"):
             if extracted.get(key):
                 self.secondary_factors[key] = extracted[key]
