@@ -1,10 +1,9 @@
 """Generate DESIGN.docx from DESIGN.md content."""
 
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
-import re
+from docx.shared import Inches, Pt, RGBColor
 
 
 def add_table(doc, headers, rows):
@@ -412,8 +411,14 @@ def build_docx():
     doc.add_heading("Tradeoffs Accepted", level=1)
     tradeoffs = [
         "Synchronous API calls -- acceptable for CLI, not for concurrent web server use.",
-        "Two LLM calls per turn -- tool_use response + follow-up text response. Could be optimized to single call with prompt engineering.",
-        "No conversation summarization -- overflow window exists but summary generation isn't triggered automatically (would require an additional LLM call).",
+        (
+            "Two LLM calls per turn -- tool_use response + follow-up text response."
+            " Could be optimized to single call with prompt engineering."
+        ),
+        (
+            "No conversation summarization -- overflow window exists but summary"
+            " generation isn't triggered automatically."
+        ),
     ]
     for i, t in enumerate(tradeoffs, 1):
         doc.add_paragraph(f"{i}. {t}")
@@ -425,7 +430,10 @@ def build_docx():
         "Streaming responses -- use Claude's streaming API for better UX.",
         "Automatic conversation summarization -- trigger when overflow exceeds threshold.",
         "Rate limiting -- cooldown between verification attempts.",
-        "Card tokenization -- never store raw card numbers, even temporarily; use a tokenization service.",
+        (
+            "Card tokenization -- never store raw card numbers,"
+            " even temporarily; use a tokenization service."
+        ),
         "Observability -- structured logging, OpenTelemetry traces.",
         "Multi-language support -- i18n for user-facing messages.",
     ]

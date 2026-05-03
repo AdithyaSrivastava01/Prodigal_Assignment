@@ -96,6 +96,25 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        name="Payment failure — expired card",
+        description="Card with past expiry date is rejected, user retries",
+        steps=[
+            Step("Hi", "Should greet"),
+            Step("ACC1001", "Should ask for name"),
+            Step("Nithin Jain", "Should ask for secondary factor"),
+            Step(
+                "1990-05-14",
+                "Should verify and show balance",
+                reject_patterns=["4321", "400001"],
+            ),
+            Step("500", "Should confirm amount and ask for card details"),
+            Step(
+                "Name: Nithin Jain, Card: 4532015112830366, CVV: 123, Expiry: 01/2020",
+                "Should reject expired card and ask user to provide valid expiry",
+            ),
+        ],
+    ),
+    Scenario(
         name="Sensitive data never exposed",
         description="PII must never appear in any response",
         steps=[
