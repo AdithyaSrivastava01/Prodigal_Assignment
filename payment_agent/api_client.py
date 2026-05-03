@@ -40,8 +40,11 @@ class PaymentAPIClient(PaymentAPIClientBase):
             if resp.status_code == 200:
                 return AccountData(**resp.json()), None
             if resp.status_code == 404:
-                data = resp.json()
-                return None, data.get("message", "Account not found.")
+                try:
+                    data = resp.json()
+                    return None, data.get("message", "Account not found.")
+                except Exception:
+                    return None, "No account found with the provided account_id."
             return None, f"Unexpected error (HTTP {resp.status_code})."
         except httpx.RequestError:
             return None, "Unable to reach the server. Please try again later."
@@ -59,7 +62,10 @@ class PaymentAPIClient(PaymentAPIClientBase):
                 f"{self._base_url}/api/process-payment",
                 json=payload,
             )
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                return False, None, "unknown_error"
             if resp.status_code == 200 and data.get("success"):
                 return True, data.get("transaction_id"), None
             return False, None, data.get("error_code", "unknown_error")
