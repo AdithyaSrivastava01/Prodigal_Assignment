@@ -60,7 +60,7 @@ class ClaudeLLMClient(LLMClientBase):
         }
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = {"type": "auto"}
+            kwargs["tool_choice"] = {"type": "any"}
 
         for attempt in range(LLM_RETRY_MAX_ATTEMPTS):
             try:

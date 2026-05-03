@@ -34,14 +34,16 @@ User said: "{user_input}"
 Agent responded: "{agent_response}"
 Expected behavior: {expected_behavior}
 
-Rate how well the agent's response matches the expected behavior.
-Return ONLY a JSON object: {{"score": <float 0.0 to 1.0>, "reason": "<brief explanation>"}}
+Does the agent's response satisfy the expected behavior? Focus on whether the
+response accomplishes what was expected, not on exact wording or formatting.
+Return ONLY a JSON object with no markdown formatting:
+{{"score": <float 0.0 to 1.0>, "reason": "<brief explanation>"}}
 
 Scoring guide:
-- 1.0: Perfectly matches expected behavior
-- 0.7-0.9: Substantially correct, minor issues
+- 0.9-1.0: Response clearly fulfills the expected behavior
+- 0.7-0.8: Substantially correct with minor gaps
 - 0.4-0.6: Partially correct
-- 0.0-0.3: Wrong or missing expected behavior"""
+- 0.0-0.3: Does not fulfill the expected behavior"""
 
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
