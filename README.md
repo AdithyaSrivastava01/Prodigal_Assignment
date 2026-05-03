@@ -1,6 +1,6 @@
 # Payment Collection AI Agent
 
-A production-ready conversational AI agent that handles end-to-end payment collection: account lookup, identity verification, balance disclosure, and card payment processing.
+A production-ready conversational AI agent that handles end-to-end payment collection: account lookup, identity verification, balance disclosure, and card payment processing. Uses a hybrid FSM + Claude API architecture with three-tier memory, PII isolation, and deterministic fallbacks.
 
 ## Setup
 
@@ -8,8 +8,8 @@ A production-ready conversational AI agent that handles end-to-end payment colle
 # Install dependencies
 uv sync
 
-# Or with pip
-pip install -e ".[dev]"
+# Set API key
+export ANTHROPIC_API_KEY='your-key-here'
 ```
 
 ## Usage
@@ -33,14 +33,14 @@ print(response["message"])
 ## Running Tests
 
 ```bash
+# Unit tests (no API key needed, <0.3s)
+uv run pytest tests/unit/ tests/test_validators.py tests/test_verification.py tests/test_api_client.py -v
+
+# Integration tests (requires ANTHROPIC_API_KEY)
+uv run pytest tests/integration/ -v -m integration
+
 # All tests
-uv run pytest
-
-# Verbose
 uv run pytest -v
-
-# Specific module
-uv run pytest tests/test_agent.py
 ```
 
 ## Evaluation
@@ -49,13 +49,7 @@ uv run pytest tests/test_agent.py
 uv run python -m eval.evaluate
 ```
 
-Runs 13 scenarios covering happy paths, verification failures, payment failures, edge cases, and sensitive data leak checks.
-
-## Linting
-
-```bash
-uv run ruff check .
-```
+Runs 6 behavioral scenarios with LLM-as-judge scoring. Reports pass rate, average score, and PII leak rate.
 
 ## Architecture
 
@@ -65,16 +59,18 @@ See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
 
 | Module | Responsibility |
 |--------|---------------|
-| `agent.py` | State machine orchestrator with `next()` interface |
-| `models.py` | Pydantic models for conversation state, account data, card details |
+| `agent.py` | Hybrid FSM + Claude orchestrator with `next()` interface |
+| `models.py` | Pydantic models for state, account data, card details, LLM response |
+| `memory/` | Three-tier memory: WorkingMemory, ConversationMemory, SemanticMemory |
+| `llm/client.py` | Claude API client with retry + MockLLMClient for testing |
+| `llm/tools.py` | Tool definitions for entity extraction (strict schemas) |
+| `llm/prompts.py` | State-specific system prompts with PII safety rules |
+| `llm/safety.py` | Post-response PII scanner (defense-in-depth) |
 | `validators.py` | Input validation (Luhn, CVV, expiry, date, amount) |
 | `verification.py` | Strict identity verification (name + secondary factor) |
-| `input_parser.py` | Regex-based extraction from free-text input |
 | `api_client.py` | Abstract API client + httpx implementation |
 
-## Sample Conversations
-
-### Successful End-to-End Payment
+## Sample Conversation
 
 ```
 You: Hi
@@ -112,63 +108,8 @@ Transaction Summary:
 Thank you for your payment!
 ```
 
-### Verification Failure (User Exhausts Retries)
+## Linting
 
-```
-You: Hi
-Agent: Hello! I'm here to help you with your payment. Could you please provide your account ID?
-
-You: ACC1001
-Agent: Account found. For verification, could you please provide your full name?
-
-You: John Doe
-Agent: The name provided does not match our records. You have 2 attempt(s) remaining.
-Please provide your full name exactly as registered.
-
-You: Jane Doe
-Agent: The name provided does not match our records. You have 1 attempt(s) remaining.
-Please provide your full name exactly as registered.
-
-You: Nobody
-Agent: Verification failed. Maximum attempts exceeded. For security, this session has been
-locked. Please contact customer support for assistance.
-```
-
-### Payment Failure (Invalid Card)
-
-```
-You: Hi
-Agent: Hello! I'm here to help you with your payment. Could you please provide your account ID?
-
-You: ACC1001
-Agent: Account found. For verification, could you please provide your full name?
-
-You: Nithin Jain
-Agent: Thank you. To complete verification, please provide one of the following: ...
-
-You: 4321
-Agent: Identity verified successfully! Your outstanding balance is ₹1,250.75. ...
-
-You: 500
-Agent: You'd like to pay ₹500.00. Please provide your card details: ...
-
-You: Name: Nithin Jain, Card: 1234567890123456, CVV: 123, Expiry: 12/2027
-Agent: Card number is invalid. Please provide a valid card number.
-```
-
-### Edge Case: Zero Balance Account
-
-```
-You: Hi
-Agent: Hello! I'm here to help you with your payment. Could you please provide your account ID?
-
-You: ACC1003
-Agent: Account found. For verification, could you please provide your full name?
-
-You: Priya Agarwal
-Agent: Thank you. To complete verification, please provide one of the following: ...
-
-You: 1992-08-10
-Agent: Identity verified successfully! Your outstanding balance is ₹0.00.
-No payment is required. Thank you!
+```bash
+uv run ruff check .
 ```

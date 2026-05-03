@@ -2,30 +2,35 @@
 
 ## Architecture Overview
 
-The agent uses a **rule-based state machine** pattern where each conversation state maps to a handler method. The `Agent` class orchestrates all components through dependency injection.
+The agent uses a **hybrid FSM + Claude API** architecture. A deterministic state machine controls conversation flow, verification gates, and PII isolation, while Claude handles natural language understanding (entity extraction via `tool_use`) and natural language generation (conversational responses).
 
 ```
-                        ┌─────────────────┐
-                        │     Agent       │
-                        │  (State Machine)│
-                        └──────┬──────────┘
-               ┌───────────────┼───────────────┐
-               │               │               │
-        ┌──────▼──────┐ ┌─────▼──────┐ ┌──────▼──────┐
-        │ InputParser  │ │ Verification│ │  Validators  │
-        │ (Extraction) │ │  Service    │ │ (Validation) │
-        └─────────────┘ └────────────┘ └─────────────┘
-                               │
-                        ┌──────▼──────┐
-                        │  API Client  │
-                        │  (Abstract)  │
-                        └──────┬──────┘
-                               │
-                        ┌──────▼──────┐
-                        │  httpx impl  │
-                        │  (Concrete)  │
-                        └─────────────┘
+                     ┌──────────────────────────┐
+                     │         Agent             │
+                     │  (Hybrid FSM + Claude)    │
+                     └────────────┬─────────────┘
+          ┌───────────────┬───────┼───────┬───────────────┐
+          │               │       │       │               │
+   ┌──────▼──────┐ ┌─────▼─────┐ │ ┌─────▼──────┐ ┌─────▼──────┐
+   │  LLM Client  │ │  Memory   │ │ │ Verification│ │ Validators  │
+   │  (Claude API)│ │ (3-tier)  │ │ │  Service    │ │(Card, Date) │
+   └──────┬──────┘ └───────────┘ │ └────────────┘ └────────────┘
+          │                      │
+   ┌──────▼──────┐        ┌─────▼──────┐
+   │ Tool Defs    │        │  API Client │
+   │ + Prompts    │        │  (Abstract) │
+   │ + PIIScanner │        └─────┬──────┘
+   └─────────────┘               │
+                          ┌──────▼──────┐
+                          │  httpx impl  │
+                          └─────────────┘
 ```
+
+### Why Hybrid, Not Full-LLM or Full-Rule-Based
+
+- **Full-LLM risk:** An unconstrained LLM could skip verification steps, leak PII via prompt injection, or produce non-deterministic verification behavior. These are unacceptable in a payment flow.
+- **Full-rule-based limitation:** Regex parsing is brittle — it misses phrasing variations and can't handle out-of-order input naturally. An LLM excels at understanding diverse input.
+- **Hybrid advantage:** The state machine enforces invariants (verification gate, step ordering, retry limits), while Claude handles the "messy" parts (parsing "my birthday is May 14th 1990" or "I want to pay the full amount").
 
 ### State Machine
 
@@ -43,81 +48,89 @@ GREETING ──► AWAITING_ACCOUNT_ID ──► AWAITING_NAME ──► AWAITIN
 
 Any verification or payment failure beyond the retry limit transitions directly to `CLOSED`.
 
+## Memory Architecture (3-Tier)
+
+Inspired by mem0's extract-consolidate-retrieve pipeline and LangGraph's reducer-driven state:
+
+| Tier | Class | Purpose | Mutability |
+|------|-------|---------|-----------|
+| 1 | `WorkingMemory` | Structured state — source of truth for FSM | Read/write by state machine |
+| 2 | `ConversationMemory` | Sliding window + summary for Claude context | Append-only messages |
+| 3 | `SemanticMemory` | Extracted facts injected into system prompt | Append-only facts |
+
+**EntityBuffer** (part of WorkingMemory) handles slot-filling for out-of-order input. When a user says "Hi, I'm Nithin Jain, my account is ACC1001", both the name and account_id are buffered. The state machine drains entities in flow order — account_id first, then name — so no information is lost.
+
+## PII Safety (Defense-in-Depth)
+
+Three layers of protection:
+
+1. **Architecture-level isolation:** DOB, Aadhaar last 4, and pincode are NEVER sent to Claude. The state machine performs verification locally using `VerificationService`. Claude only sees sanitized status messages ("Entities extracted.").
+
+2. **System prompt rules:** Every state-specific prompt includes hard rules: "NEVER reveal the user's date of birth, Aadhaar number, or pincode."
+
+3. **Post-response PIIScanner:** Before any response reaches the user, `PIIScanner` checks for leaked sensitive values. If found, the entire response is replaced with a safe fallback.
+
+## LLM Integration
+
+### Entity Extraction via Tool Use
+
+Claude extracts entities through two tools with strict schemas:
+- `extract_entities` — account_id, name, DOB, Aadhaar, pincode, payment amount/intent, decline/affirmative signals
+- `extract_card_details` — cardholder name, card number, CVV, expiry
+
+Progressive tool disclosure: only tools valid for the current state are exposed. Card collection state gets `extract_card_details`; terminal states get no tools.
+
+### State-Specific System Prompts
+
+Each `ConversationState` maps to a focused system prompt that tells Claude exactly what to do in that state. This prevents hallucination of irrelevant actions.
+
+### Deterministic Fallback Chain
+
+If the Claude API fails (rate limit, network error, server error):
+1. Retry with exponential backoff + jitter (up to 3 attempts)
+2. Fall back to template responses (one per state)
+3. The conversation continues — never crashes
+
 ## Key Decisions
 
-### 1. Rule-Based vs. LLM-Driven
+### 1. Case-Sensitive Exact Name Matching
 
-**Decision:** Rule-based state machine.
+`provided_name == account_data.full_name` with no normalization. The assignment requires strict matching with no fuzzy workarounds.
 
-**Rationale:**
-- **Determinism** — the assignment requires consistent, repeatable behavior across runs. LLM outputs are inherently non-deterministic.
-- **Strict verification** — the requirement explicitly forbids fuzzy matching. A regex/comparison approach guarantees exact matching with zero risk of an LLM "interpreting" a close match as valid.
-- **Testability** — 116 unit/integration tests run in <0.5s with full coverage of edge cases. LLM-based agents require expensive, flaky evaluation loops.
-- **Zero external dependencies** — no API keys, no token costs, no latency from LLM inference. The agent runs entirely locally except for the payment API calls.
-- **Security** — no risk of prompt injection causing the agent to leak sensitive data or skip verification steps.
+### 2. Shared Verification Counter
 
-### 2. Case-Sensitive Exact Name Matching
+A single counter tracks failures across name AND secondary factor verification (max 3 total). Separate counters would allow 6 attempts — too lenient for security.
 
-**Decision:** `provided_name == account_data.full_name` with no normalization beyond whitespace collapsing in the input parser.
+### 3. Dependency Injection for Both API and LLM
 
-**Rationale:** The assignment states "no fuzzy matching, no case-insensitive workarounds for names." This is the strictest interpretation. The input parser normalizes multiple spaces (`" ".join(name.split())`), but the comparison itself is exact.
+`PaymentAPIClientBase` and `LLMClientBase` are abstract. `MockLLMClient` returns pre-configured `LLMResponse` objects for deterministic unit testing. No LLM calls in unit tests.
 
-**Tradeoff:** A user typing "nithin jain" instead of "Nithin Jain" will fail verification. This is intentional per requirements but could be a UX issue in production.
+### 4. Incremental Card Detail Collection
 
-### 3. Shared Verification Counter
+Card fields are merged across messages. Users can provide all details at once or one at a time.
 
-**Decision:** A single counter (`verification_attempts`) tracks failures across both name and secondary factor verification, with a maximum of 3 total failed attempts.
+## Testing Strategy (3 Layers)
 
-**Rationale:** Separate counters would allow up to 6 total attempts (3 name + 3 secondary), which is too lenient for a security-sensitive flow. A shared counter ensures the session locks after 3 failures regardless of which step fails.
-
-### 4. Abstract API Client for Dependency Injection
-
-**Decision:** `PaymentAPIClientBase` (ABC) with a concrete `PaymentAPIClient` (httpx) implementation. The `Agent` constructor accepts an optional `api_client` parameter.
-
-**Rationale:** Enables testing with `MockPaymentAPIClient` without network calls. All 116 tests run in <0.5s. Also allows swapping implementations (e.g., async client) without changing the agent.
-
-### 5. Incremental Card Detail Collection
-
-**Decision:** Parse whatever card fields the user provides in each message, merge with previously collected fields, and ask for remaining fields.
-
-**Rationale:** Users may provide all details at once ("Name: X, Card: Y, CVV: Z, Expiry: W") or one at a time. The agent handles both by tracking which fields are complete and only asking for what's missing.
-
-### 6. Card Data Clearing Strategy
-
-**Decision:** Clear ALL card data on successful payment or terminal failure. On retryable failures, clear only the problematic field (e.g., `invalid_card` clears just the card number).
-
-**Rationale:** Minimizes sensitive data retention while allowing the user to fix only the invalid field without re-entering everything.
+| Layer | Location | What | Speed |
+|-------|----------|------|-------|
+| Unit | `tests/unit/` | State transitions with MockLLMClient, memory, PII scanner | <0.3s |
+| Integration | `tests/integration/` | Full flows with real Claude + real Prodigal API | ~30s |
+| Eval | `eval/` | LLM-as-judge behavioral scoring across scenarios | ~60s |
 
 ## Tradeoffs Accepted
 
-1. **Regex-based parsing is brittle** — patterns like "my name is X" work for common phrases but miss unusual phrasing. A production system would use NLP or structured input forms.
-
-2. **No conversation history logging** — the agent maintains state in memory but doesn't log conversations. Production systems need audit trails.
-
-3. **Synchronous API calls** — `httpx.Client` blocks during API calls. Acceptable for a CLI agent but not for a web server handling concurrent users.
-
-4. **No card number masking in memory** — while card data is cleared after payment, it exists in plaintext in `ConversationContext` during collection. Production systems would use tokenization.
-
-5. **Amount formatting** — uses standard comma formatting (1,250.75) rather than Indian numbering (1,250.75 is the same for amounts under 1 lakh, but larger amounts would differ).
+1. **Synchronous API calls** — acceptable for CLI, not for concurrent web server use.
+2. **No card number masking in memory** — card data cleared after payment, but exists in plaintext during collection.
+3. **Two LLM calls per turn** — tool_use response + follow-up text response. Could be optimized to single call.
+4. **No conversation summarization** — overflow window exists but summary generation isn't triggered automatically (would require an additional LLM call).
 
 ## What I Would Improve With More Time
 
-1. **Structured input collection** — for card details, use a form-like prompt with clear field labels rather than free-text parsing.
-
-2. **Conversation logging** — add structured logging for audit trails without persisting raw card data.
-
-3. **Async support** — make the API client async for use in web server contexts.
-
-4. **Rate limiting** — add cooldown between verification attempts to prevent brute-force attacks.
-
-5. **Session timeout** — expire inactive sessions after a configurable duration.
-
-6. **i18n** — support multiple languages for user-facing messages.
-
-7. **Input sanitization** — while the current regex approach is injection-safe (no code execution), adding explicit sanitization would be defense-in-depth.
-
-8. **Comprehensive card validation** — validate card number prefixes (Visa starts with 4, Mastercard with 5, etc.) and enforce Amex 15-digit length.
-
-9. **More robust date parsing** — accept formats like "May 14, 1990" or "14/05/1990" and normalize to YYYY-MM-DD.
-
-10. **Webhook/callback support** — notify external systems of successful payments.
+1. **Async support** — make both API client and LLM client async for web server use.
+2. **Streaming responses** — use Claude's streaming API for better UX.
+3. **Automatic conversation summarization** — trigger when overflow exceeds threshold.
+4. **Rate limiting** — cooldown between verification attempts.
+5. **Session timeout** — expire inactive sessions.
+6. **Card tokenization** — never store raw card numbers, even temporarily.
+7. **Observability** — structured logging, OpenTelemetry traces.
+8. **Multi-language support** — i18n for user-facing messages.
