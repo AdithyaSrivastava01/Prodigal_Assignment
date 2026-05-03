@@ -9,7 +9,8 @@ EXTRACT_ENTITIES_TOOL: dict = {
         "Return null for any entity not clearly present in the message. "
         "For names, extract the EXACT text the user provided — "
         "do not normalize or correct spelling. "
-        "For dates, extract in YYYY-MM-DD format if possible. "
+        "For dates, extract in YYYY-MM-DD format if possible — "
+        "do NOT validate whether dates are real, just extract them verbatim. "
         "For aadhaar_last4, extract exactly 4 digits. "
         "For pincode, extract exactly 6 digits."
     ),

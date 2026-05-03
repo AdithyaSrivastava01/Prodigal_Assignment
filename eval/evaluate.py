@@ -51,6 +51,13 @@ Scoring guide:
     )
     try:
         text = response.content[0].text
+        # Strip markdown code fences if present
+        text = text.strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:])  # drop opening fence line
+        if text.endswith("```"):
+            text = text[: text.rfind("```")]
+        text = text.strip()
         result = json.loads(text)
         return float(result.get("score", 0.0))
     except (json.JSONDecodeError, ValueError, IndexError):

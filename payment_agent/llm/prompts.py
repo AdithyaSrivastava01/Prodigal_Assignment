@@ -36,6 +36,8 @@ The user's name has been checked. Now ask for ONE secondary verification factor:
 - Their pincode (6 digits)
 
 Do NOT reveal which factors are on file or which would match.
+Do NOT validate or reject dates — extract exactly what the user provides.
+Date validation is handled by the backend; your job is only extraction.
 Use the extract_entities tool to parse their response.""",
     ConversationState.BALANCE_DISCLOSED: f"""{BASE_RULES}
 
