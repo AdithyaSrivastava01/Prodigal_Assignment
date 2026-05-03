@@ -13,6 +13,12 @@ from payment_agent.validators import (
 )
 from payment_agent.verification import VerificationService
 
+
+def _fmt(amount: float) -> str:
+    """Format amount as Indian Rupee string with commas."""
+    return f"\u20b9{amount:,.2f}"
+
+
 PAYMENT_ERROR_MESSAGES: dict[str, str] = {
     "invalid_amount": (
         "The payment amount is invalid. "
@@ -177,14 +183,14 @@ class Agent:
                 self._ctx.state = ConversationState.CLOSED
                 return (
                     "Identity verified successfully! "
-                    f"Your outstanding balance is \u20b9{balance:.2f}. "
+                    f"Your outstanding balance is {_fmt(balance)}. "
                     "No payment is required. Thank you!"
                 )
 
             self._ctx.state = ConversationState.BALANCE_DISCLOSED
             return (
                 "Identity verified successfully! "
-                f"Your outstanding balance is \u20b9{balance:.2f}. "
+                f"Your outstanding balance is {_fmt(balance)}. "
                 "Would you like to make a payment? If so, please specify the amount "
                 "or say 'full' to pay the entire balance."
             )
@@ -225,7 +231,7 @@ class Agent:
             self._ctx.state = ConversationState.AWAITING_AMOUNT
             return (
                 f"How much would you like to pay? "
-                f"Your outstanding balance is \u20b9{balance:.2f}."
+                f"Your outstanding balance is {_fmt(balance)}."
             )
 
         return (
@@ -253,12 +259,12 @@ class Agent:
 
         valid, error = validate_amount(amount, balance)
         if not valid:
-            return f"{error} Please enter a valid amount (up to \u20b9{balance:.2f})."
+            return f"{error} Please enter a valid amount (up to {_fmt(balance)})."
 
         self._ctx.payment_amount = amount
         self._ctx.state = ConversationState.COLLECTING_CARD
         return (
-            f"You'd like to pay \u20b9{amount:.2f}. Please provide your card details:\n"
+            f"You'd like to pay {_fmt(amount)}. Please provide your card details:\n"
             "- Cardholder name\n"
             "- Card number\n"
             "- CVV\n"
@@ -332,9 +338,9 @@ class Agent:
                 f"Payment successful!\n\n"
                 f"Transaction Summary:\n"
                 f"- Account: {self._ctx.account_id}\n"
-                f"- Amount paid: \u20b9{self._ctx.payment_amount:.2f}\n"
+                f"- Amount paid: {_fmt(self._ctx.payment_amount)}\n"
                 f"- Transaction ID: {txn_id}\n"
-                f"- Remaining balance: \u20b9{remaining_balance:.2f}\n\n"
+                f"- Remaining balance: {_fmt(remaining_balance)}\n\n"
                 "Thank you for your payment!"
             )
 
